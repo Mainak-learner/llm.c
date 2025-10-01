@@ -569,7 +569,7 @@ __global__ void rmsnorm_backward_kernel(floatX* dinp, floatX* dweight,
     // Write final results from shared memory to global memory
     for (int j = threadIdx.x; j < C; j += blockDim.x) {
         // Add accumulated dweight from shared memory
-        atomicAdd(&dweight[j], dweight_shared[j]);
+        dweight[j] = (floatX)((float)dweight[j] + dweight_shared[j]); // Simple read-add-write
         // Calculate and add dinp gradient
         dx[j] = (floatX)((float)dx[j] + s * (float)weight[j] * (float)dout_i[j] + 2.0f * (float)x[j] * d_ss);
     }
