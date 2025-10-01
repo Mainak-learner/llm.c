@@ -536,15 +536,22 @@ __global__ void rmsnorm_forward_kernel(floatX* __restrict__ out, float* __restri
 __global__ void rmsnorm_backward_kernel(floatX* dinp, floatX* dweight,
                                         const floatX* dout, const floatX* inp, const floatX* weight, const float* rstd,
                                         int N, int C) {
-    int idx = blockIdx.x; // each block processes one token
+    extern __shared__ float dweight_shared[]; // Declare shared memory
+    int idx = blockIdx.x;
     if (idx >= N) { return; }
+
+    // Initialize shared memory to zero
+    for (int j = threadIdx.x; j < C; j += blockDim.x) {
+        dweight_shared[j] = 0.0f;
+    }
+    __syncthreads();
 
     const floatX* x = inp + idx * C;
     const floatX* dout_i = dout + idx * C;
     floatX* dx = dinp + idx * C;
     float s = rstd[idx];
 
-    // Calculate d_ss part
+    // ... (d_ss calculation is the same) ...
     float d_ss_thread = 0.0f;
     for (int j = threadIdx.x; j < C; j += blockDim.x) {
         d_ss_thread += (float)weight[j] * (float)x[j] * (float)dout_i[j];
@@ -552,10 +559,18 @@ __global__ void rmsnorm_backward_kernel(floatX* dinp, floatX* dweight,
     d_ss_thread = blockReduce<warpReduceSum>(d_ss_thread);
     float d_ss = d_ss_thread * -0.5f * s * s * s / C;
 
-    // Calculate gradients for dweight and dinp
+    // Accumulate dweight gradients into shared memory
     for (int j = threadIdx.x; j < C; j += blockDim.x) {
         float norm_x = s * (float)x[j];
-        atomicAdd(&dweight[j], norm_x * (float)dout_i[j]); // Use atomicAdd for dweight accumulation
+        atomicAdd(&dweight_shared[j], norm_x * (float)dout_i[j]); // OK: float*, float
+    }
+    __syncthreads();
+
+    // Write final results from shared memory to global memory
+    for (int j = threadIdx.x; j < C; j += blockDim.x) {
+        // Add accumulated dweight from shared memory
+        atomicAdd(&dweight[j], dweight_shared[j]);
+        // Calculate and add dinp gradient
         dx[j] = (floatX)((float)dx[j] + s * (float)weight[j] * (float)dout_i[j] + 2.0f * (float)x[j] * d_ss);
     }
 }
@@ -591,6 +606,7 @@ void rmsnorm_backward(floatX* dinp, floatX* dweight,
     NVTX_RANGE_FN();
     const int block_size = 512;
     const int grid_size = B * T;
-    rmsnorm_backward_kernel<<<grid_size, block_size, 0, stream>>>(dinp, dweight, dout, inp, weight, rstd, B * T, C);
+    size_t shared_mem_size = C * sizeof(float); // Allocate shared memory for dweight
+    rmsnorm_backward_kernel<<<grid_size, block_size, shared_mem_size, stream>>>(dinp, dweight, dout, inp, weight, rstd, B * T, C);
     cudaCheck(cudaGetLastError());
 }
