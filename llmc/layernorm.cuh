@@ -196,29 +196,6 @@ __global__ void fused_residual_forward_kernel5(floatX* residual, floatX* normed,
     }
 }
 
-    v = warpReduceSum(v) / C;
-    float s = rsqrtf(v + eps);
-
-    for(int c = threadIdx.x * x128::size; c < C; c += WARP_SIZE * x128::size) {
-        const x128 res = s_res[c / x128::size];
-        const x128 w = s_weight[c / x128::size];
-        const x128 b = s_bias[c / x128::size];
-        x128 out;
-        for(int k = 0; k < x128::size; ++k) {
-            float n = s * ((float)res[k] - m); // normalized output
-            float o = n * (float)w[k] + (float)b[k]; // scale and shift it
-            out[k] = o;
-        }
-
-        store128cs(normed + c, out);
-    }
-    // cache the mean and rstd for the backward pass later
-    if(threadIdx.x == 0) {
-        mean[idx] = m;
-        rstd[idx] = s;
-    }
-}
-
 __global__ void residual_forward_kernel(floatX* out, const floatX* inp1, const floatX* inp2) {
     int idx = (blockIdx.x * blockDim.x + threadIdx.x) * x128::size;
 
