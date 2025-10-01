@@ -898,18 +898,18 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         // Accumulate gradients from this layer in a background stream.
         if(last_step) {
             floatX* const pointers[] = {
-                dl_ln1w,
+                dl_ln1w, // dl_ln1b removed
                 dl_qkvw, dl_qkvb,
                 dl_attprojw, dl_attprojb,
-                dl_ln2w, dl_ln2b,
+                dl_ln2w, // dl_ln2b removed
                 dl_fcw, dl_fcb,
                 dl_fcprojw, dl_fcprojb
             };
             const size_t nelem[] = {
-                C, C,
+                C, // C for dln1b removed
                 3 * C * C, 3 * C,
                 C * C, C,
-                C, C,
+                C, // C for dln2b removed
                 4 * C * C, 4 * C,
                 C * 4 * C, C
             };
@@ -929,8 +929,8 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         #endif
         cudaCheck(cudaMemcpyAsync(&model->mean_loss, model->accumulated_mean_loss, sizeof(float), cudaMemcpyDeviceToHost, main_stream));
         // reduce the gradients for non-transformer block parameters
-        floatX* const pointers[] = {grads.wte, grads.wpe, grads.lnfw, grads.lnfb};
-        const size_t nelem[] = {Vp * C, T * C, C, C};
+        floatX* const pointers[] = {grads.wte, grads.wpe, grads.lnfw}; // grads.lnfb removed
+        const size_t nelem[] = {Vp * C, T * C, C}; // final C removed
         multi_gpu_async_reduce_gradient(pointers, nelem, &multi_gpu_config, main_stream);
     }
 
