@@ -139,9 +139,9 @@ __global__ void layernorm_forward_kernel6(floatX* __restrict__ out, float* __res
     }
 }
 
-__global__ void fused_residual_forward_kernel5(floatX* residual, floatX* normed, float* mean, float* rstd,
+__global__ void fused_residual_forward_kernel5(floatX* residual, floatX* normed, float* rstd,
                                                const floatX* inp1, const floatX* inp2,
-                                               const floatX* weight, const floatX* bias,
+                                               const floatX* weight,
                                                int N, int C) {
     assert(blockDim.x == WARP_SIZE);
 
@@ -464,9 +464,9 @@ void residual_forward(floatX* out, const floatX* inp1, const floatX* inp2, int N
     cudaCheck(cudaGetLastError());
 }
 
-void fused_residual_forward5(floatX* residual, floatX* normed, float* mean, float* rstd,
+void fused_residual_forward5(floatX* residual, floatX* normed, float* rstd,
                              const floatX* inp1, const floatX* inp2,
-                             const floatX* weight, const floatX* bias,
+                             const floatX* weight,
                              int N, int C, cudaStream_t stream) {
     const int block_size = 256;
     int block_y = block_size / WARP_SIZE;
