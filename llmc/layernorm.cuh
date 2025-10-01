@@ -144,56 +144,57 @@ __global__ void fused_residual_forward_kernel5(floatX* residual, floatX* normed,
                                                const floatX* weight,
                                                int N, int C) {
     assert(blockDim.x == WARP_SIZE);
-
-    // load weights and biases into shared memory
-    // do this before we allow any threads to exit!
     extern __shared__ char* params[];
-    // load128/store128 sometimes generated multiple instructions when the types here were floatX*, so
-    // let's keep everything as x128
     x128* s_weight = reinterpret_cast<x128*>(params);
-    x128* s_bias = reinterpret_cast<x128*>(params) + (C / x128::size);
-    x128* s_res = reinterpret_cast<x128*>(params) + ((2 + threadIdx.y) * C / x128::size);
+    x128* s_res = reinterpret_cast<x128*>(params) + (C / x128::size); // s_bias removed
 
     int sidx = (threadIdx.x + WARP_SIZE * threadIdx.y) * x128::size;
     for(int i = sidx; i < C; i += blockDim.y * WARP_SIZE * x128::size) {
         s_weight[i/x128::size] = load128(weight + i);
-        s_bias[i/x128::size] = load128(bias + i);
     }
     __syncthreads();
 
     int idx = blockIdx.x * blockDim.y + threadIdx.y;
-    if(idx > N) return;
+    if(idx >= N) return; // Use >= to be safe
 
-    // adjust pointers to current token
     residual += C * idx;
     normed += C * idx;
     inp1 += C * idx;
     inp2 += C * idx;
 
     const float eps = 1e-5f;
-    float sum = 0.0f;
+    float ss = 0.0f; // sum of squares instead of sum
     for(int c = threadIdx.x * x128::size; c < C; c += WARP_SIZE * x128::size) {
         const x128 in1 = load128cs(inp1 + c);
         const x128 in2 = load128cs(inp2 + c);
         x128 out;
         for(int k = 0; k < x128::size; ++k) {
             out[k] = (float)in1[k] + (float)in2[k];
-            sum += (float)out[k];
+            ss += (float)out[k] * (float)out[k]; // calculate sum of squares
         }
         store128cs(residual + c, out);
         s_res[c / x128::size] = out;
     }
 
-    sum = warpReduceSum(sum);
-    float m = sum / C;
-    float v = 0.f;
+    ss = warpReduceSum(ss) / C;
+    float s = rsqrtf(ss + eps);
 
     for(int c = threadIdx.x * x128::size; c < C; c += WARP_SIZE * x128::size) {
         const x128 res = s_res[c / x128::size];
+        const x128 w = s_weight[c / x128::size];
+        x128 out_data;
         for(int k = 0; k < x128::size; ++k) {
-            v += ((float)res[k] - m) * ((float)res[k] - m);
+            float o = (s * (float)res[k]) * (float)w[k]; // RMSNorm logic
+            out_data[k] = (floatX)o;
         }
+        store128cs(normed + c, out_data);
     }
+
+    if(threadIdx.x == 0) {
+        // mean[idx] = m; // REMOVED
+        rstd[idx] = s;
+    }
+}
 
     v = warpReduceSum(v) / C;
     float s = rsqrtf(v + eps);
@@ -471,20 +472,17 @@ void fused_residual_forward5(floatX* residual, floatX* normed, float* rstd,
     const int block_size = 256;
     int block_y = block_size / WARP_SIZE;
     const int grid_size = CEIL_DIV(N, block_y);
-    size_t smem = (2 + block_y) * C * sizeof(floatX);
+    size_t smem = (1 + block_y) * C * sizeof(floatX); // 1 for weight, not 2 (no bias)
 
-    // in order to use more than 48 KiB of smem, need to call cudaFuncSetAttribute
-    // this may fail, in which case we fall back to the smem free implementation.
     cudaCheck(cudaGetLastError());
     auto status = cudaFuncSetAttribute(fused_residual_forward_kernel5, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
     cudaCheck(cudaGetLastError());
     if(status == cudaSuccess) {
-        fused_residual_forward_kernel5<<<grid_size, dim3(WARP_SIZE, block_y), smem, stream>>>(residual, normed,
-                                                                                              mean, rstd, inp1, inp2,
-                                                                                              weight, bias, N, C);
+        fused_residual_forward_kernel5<<<grid_size, dim3(WARP_SIZE, block_y), smem, stream>>>(
+            residual, normed, rstd, inp1, inp2, weight, N, C);
     } else {
         residual_forward(residual, inp1, inp2, N*C, stream);
-        layernorm_forward(normed, mean, rstd, residual, weight, bias, N, 1, C, stream);
+        rmsnorm_forward(normed, rstd, residual, weight, N, 1, C, stream); // Call rmsnorm_forward in fallback
     }
     cudaCheck(cudaGetLastError());
 }
