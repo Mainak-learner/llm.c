@@ -17,6 +17,11 @@ E.g., the layernorms are connected to the residuals so we += in layernorm backwa
 // ----------------------------------------------------------------------------
 // CUDA kernels
 
+// Add this forward declaration near the top of llmc/layernorm.cuh
+void rmsnorm_forward(floatX* out, float* rstd,
+                     const floatX* inp, const floatX* weight,
+                     int B, int T, int C, cudaStream_t stream);
+
 __global__ void layernorm_forward_kernel3(floatX* __restrict__ out, float* __restrict__ mean, float* __restrict__ rstd,
                                     const floatX*  __restrict__ inp, const floatX*  __restrict__ weight,
                                     const floatX* __restrict__ bias, int N, int C) {

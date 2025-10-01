@@ -675,11 +675,11 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
     tokenCheck(inputs, B*T, V);
 
     // forward pass
-    ParameterTensors params = model->params; // for brevity
+    ParameterTensors params = model->params;
     ActivationTensors acts = model->acts;
-    encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C, main_stream); // encoding goes into residual[0]
+    encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C, main_stream);
 
-    // first layernorm isn't fused
+    // first rmsnorm isn't fused
     rmsnorm_forward((model->recompute < 2) ? acts.ln1 : acts.lnf, acts.ln1_rstd, acts.encoded, params.ln1w, B, T, C, main_stream);
 
     for (int l = 0; l < L; l++) {
@@ -687,32 +687,27 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
 
         floatX* residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
 
-        // get the pointers of the weights for this layer
+        // Corrected pointer setups
         floatX* l_qkvw = params.qkvw + l * 3*C * C;
         floatX* l_qkvb = params.qkvb + l * 3*C;
         floatX* l_attprojw = params.attprojw + l * C * C;
         floatX* l_attprojb = params.attprojb + l * C;
         floatX* l_ln2w = params.ln2w + l * C;
-        // floatX* l_ln2b = params.ln2b + l * C;
         floatX* l_fcw = params.fcw + l * 4*C * C;
         floatX* l_fcb = params.fcb + l * 4*C;
         floatX* l_fcprojw = params.fcprojw + l * C * 4*C;
         floatX* l_fcprojb = params.fcprojb + l * C;
 
-        // get the pointers of the activations for this layer
         floatX* l_ln1 = (model->recompute < 2) ? acts.ln1 + l * B * T * C : acts.lnf;
         floatX* l_qkvr = acts.qkvr + l * B * T * 3*C;
         floatX* l_atty = acts.atty + l * B * T * C;
         floatX* l_residual2 = acts.residual2 + l * B * T * C;
         floatX* l_ln2 = (model->recompute < 2) ? acts.ln2 + l * B * T * C : acts.lnf;
-        // float* l_ln2_mean = acts.ln2_mean + l * B * T;
         float* l_ln2_rstd = acts.ln2_rstd + l * B * T;
         floatX* l_fch = acts.fch + l * B * T * 4*C;
-        // reuse the same activation buffer at each layer, as we'll re-compute the gelu during backward
-        // very useful because we dramatically reduce VRAM usage, and may be able to fit larger batch size
         floatX* l_fch_gelu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * 4*C : acts.fch_gelu;
         floatX* l_residual3 = acts.residual3 + l * B * T * C;
-        floatX* scratch = (floatX*)acts.output; // used for non-cudnn attention, fcproj, attproj, etc.
+        floatX* scratch = (floatX*)acts.output;
 
         // now do the forward pass
         #ifdef ENABLE_CUDNN
@@ -731,19 +726,17 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
         #endif
 
         matmul_forward_cublaslt(scratch, l_atty, l_attprojw, l_attprojb, B, T, C, C, main_stream);
-        fused_residual_forward5(l_residual3, l_ln1, l_ln1_rstd, l_residual2, scratch, l_ln1w, B * T, C, main_stream);
+        fused_residual_forward5(l_residual2, l_ln2, l_ln2_rstd, residual, scratch, l_ln2w, B*T, C, main_stream); // Corrected call
         matmul_forward_cublaslt(l_fch_gelu, l_ln2, l_fcw, l_fcb, B, T, C, 4*C, main_stream, l_fch, model->gelu_fusion);
         matmul_forward_cublaslt(scratch, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C, main_stream);
         // OK, fusion across blocks.
         if(l+1 != L) {
-            floatX* l_ln1 = (model->recompute < 2) ? acts.ln1 + (l + 1) * B * T * C : acts.lnf;
-            // float* l_ln1_mean = acts.ln1_mean + (l + 1) * B * T;
-            float* l_ln1_rstd = acts.ln1_rstd + (l + 1) * B * T;
-            const floatX* l_ln1w = params.ln1w + (l + 1) * C;
-            // const floatX* l_ln1b = params.ln1b + (l + 1) * C;
-            fused_residual_forward5(l_residual3, l_ln1, l_ln1_rstd, l_residual2, scratch, l_ln1w, B * T, C, main_stream);
+            floatX* l_next_ln1 = (model->recompute < 2) ? acts.ln1 + (l + 1) * B * T * C : acts.lnf;
+            float* l_next_ln1_rstd = acts.ln1_rstd + (l + 1) * B * T;
+            const floatX* l_next_ln1w = params.ln1w + (l + 1) * C;
+            fused_residual_forward5(l_residual3, l_next_ln1, l_next_ln1_rstd, l_residual2, scratch, l_next_ln1w, B * T, C, main_stream); // Corrected call
         } else {
-            fused_residual_forward5(l_residual3, acts.lnf, acts.lnf_rstd, l_residual2, scratch, params.lnfw, B * T, C, main_stream);
+            fused_residual_forward5(l_residual3, acts.lnf, acts.lnf_rstd, l_residual2, scratch, params.lnfw, B * T, C, main_stream); // Corrected call
         }
     }
 
@@ -807,7 +800,7 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
     const size_t NH = model->config.num_heads;
     const size_t C = model->config.channels;
 
-    ParameterTensors params = model->params; // for brevity
+    ParameterTensors params = model->params;
     ParameterTensors grads = model->grads;
     ActivationTensors acts = model->acts;
 
@@ -821,7 +814,7 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
     // backward pass: go in the reverse order of the forward pass, and call backward() functions
 
     // reset residual stream gradients (put here to work with gradient accumulation)
-    floatX* dresidual = (floatX*)model->acts.scratch_btc; // the main buffer holding the gradient in the backward pass
+    floatX* dresidual = (floatX*)model->acts.scratch_btc;
     cudaCheck(cudaMemset(dresidual, 0, B * T * C * sizeof(floatX)));
 
     // re-use the output buffer of the forward pass as a scratchpad during backward pass
@@ -834,73 +827,56 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
     // total, final loss as the mean over all losses over all (B,T) positions in the batch
     // next: backward the classifier matmul
     matmul_backward(model->acts.scratch_bt4c, grads.wte, NULL, acts.output, acts.lnf, params.wte, NULL, B, T, C, Vp, main_stream);
-    // backward the final layernorm
-    floatX* residual = acts.residual3 + (L-1) * B * T * C; // last residual is in residual3
-    rmsnorm_backward(dresidual, grads.lnfw, grads_acts.lnf, residual, params.lnfw, acts.lnf_rstd, B, T, C); // no bias grad, no mean
-    // from this point on, we no longer need the values stored in the last residual, so we can reuse that memory as generic
-    // scratch for backward computations
-    floatX* dl_btc = residual;
+    floatX* final_residual = acts.residual3 + (L-1) * B * T * C;
+    rmsnorm_backward(dresidual, grads.lnfw, model->acts.scratch_bt4c, final_residual, params.lnfw, acts.lnf_rstd, B, T, C, main_stream); // Corrected call
+
+    floatX* dl_btc = final_residual; 
 
     // now backward all the layers
     for (int l = L-1; l >= 0; l--) {
         NvtxRange layer_range("Layer", l);
 
-        residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
+        floatX* residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
 
-        // get the pointers of the weights for this layer
-        floatX* l_ln1w = params.ln1w + l * C;
-        // floatX* l_ln1b = params.ln1b + l * C;
+        // Corrected pointer setups
         floatX* l_qkvw = params.qkvw + l * 3*C * C;
         floatX* l_attprojw = params.attprojw + l * C * C;
         floatX* l_ln2w = params.ln2w + l * C;
-        // floatX* l_ln2b = params.ln2b + l * C;
         floatX* l_fcw = params.fcw + l * 4*C * C;
         floatX* l_fcprojw = params.fcprojw + l * C * 4*C;
-        // get the pointers of the gradients of the weights for this layer
         floatX* dl_ln1w = grads.ln1w + l * C;
-        // floatX* dl_ln1b = grads.ln1b + l * C;
         floatX* dl_qkvw = grads.qkvw + l * 3*C * C;
         floatX* dl_qkvb = grads.qkvb + l * 3*C;
         floatX* dl_attprojw = grads.attprojw + l * C * C;
         floatX* dl_attprojb = grads.attprojb + l * C;
         floatX* dl_ln2w = grads.ln2w + l * C;
-        // floatX* dl_ln2b = grads.ln2b + l * C;
         floatX* dl_fcw = grads.fcw + l * 4*C * C;
         floatX* dl_fcb = grads.fcb + l * 4*C;
         floatX* dl_fcprojw = grads.fcprojw + l * C * 4*C;
         floatX* dl_fcprojb = grads.fcprojb + l * C;
-        // get the pointers of the activations for this layer
+
         floatX* l_ln1 = (model->recompute < 2) ? acts.ln1 + l * B * T * C : acts.lnf;
-        // float* l_ln1_mean = acts.ln1_mean + l * B * T;
         float* l_ln1_rstd = acts.ln1_rstd + l * B * T;
         floatX* l_qkvr = acts.qkvr + l * B * T * 3*C;
         floatX* l_atty = acts.atty + l * B * T * C;
         floatX* l_residual2 = acts.residual2 + l * B * T * C;
         floatX* l_ln2 = (model->recompute < 2) ? acts.ln2 + l * B * T * C : acts.lnf;
-        // float* l_ln2_mean = acts.ln2_mean + l * B * T;
         float* l_ln2_rstd = acts.ln2_rstd + l * B * T;
         floatX* l_fch_pre_gelu = acts.fch + l * B * T * 4*C;
         floatX* l_fch_gelu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * 4*C : acts.fch_gelu;
-        // get the pointers of the gradients of the activations for this layer
-        // notice that there is no l *, because we just have a single copy, and keep
-        // re-using this memory in every Transformer block as we calculate backward pass
 
         floatX* dl_bt4c = (floatX*)model->acts.scratch_bt4c;
 
         // start the backward pass for this layer
         if(model->recompute >= 1) {
-            // recompute >= 1 means we recompute gelu. in this case,
-            // l_fch_gelu is just a buffer, so re-compute the gelu from l_fch here
             gelu_forward(l_fch_gelu, l_fch_pre_gelu, B*T*4*C, main_stream);
         }
         matmul_backward(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, scratchF, B, T, 4*C, C, main_stream, l_fch_pre_gelu, model->gelu_fusion);
         if(model->recompute >= 2) {
-            // same as gelu above, l_ln1 and l_ln2 are just buffers if recompute >= 2, recompute them here on demand
             rmsnorm_forward(l_ln2, l_ln2_rstd, l_residual2, l_ln2w, B, T, C, main_stream);
         }
         matmul_backward(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, scratchF, B, T, C, 4 * C, main_stream);
-        // layernorm backward does += to the dresidual, so it correctly accumulates grad from the MLP block above
-        rmsnorm_backward(dl_residual2, dl_ln2w, dl_ln2, l_residual2, l_ln2w, l_ln2_rstd, B, T, C); // no bias grad, no mean        
+        rmsnorm_backward(dresidual, dl_ln2w, dl_btc, l_residual2, l_ln2w, l_ln2_rstd, B, T, C, main_stream); // += to dresidual
         matmul_backward(dl_btc, dl_attprojw, dl_attprojb, dresidual, l_atty, l_attprojw, scratchF, B, T, C, C, main_stream);
 
         #ifdef ENABLE_CUDNN
@@ -916,10 +892,8 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         if(model->recompute >= 2) {
             rmsnorm_forward(l_ln1, l_ln1_rstd, residual, l_ln1w, B, T, C, main_stream);
         }
-        // QKV parameter gradients
         matmul_backward(dl_btc, dl_qkvw, dl_qkvb, dl_bt4c, l_ln1, l_qkvw, scratchF, B, T, C, 3 * C, main_stream);
-        // layernorm backward does += to dresidual, so it correctly accumulates gradient for the Attention block above
-        rmsnorm_backward(dresidual, dl_ln1w, dl_ln1, residual, l_ln1w, l_ln1_rstd, B, T, C); // no bias grad, no mean
+        rmsnorm_backward(dresidual, dl_ln1w, dl_btc, residual, l_ln1w, l_ln1_rstd, B, T, C, main_stream); // += to dresidual
 
         // Accumulate gradients from this layer in a background stream.
         if(last_step) {
