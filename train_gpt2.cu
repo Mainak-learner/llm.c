@@ -167,7 +167,7 @@ void* malloc_and_point_parameters(ParameterTensors* params, size_t* param_elemen
     return params_memory;
 }
 
-constexpr int NUM_ACTIVATION_TENSORS = 20;
+constexpr int NUM_ACTIVATION_TENSORS = 18;
 typedef struct {
     floatX* encoded; // (B, T, C)
     floatX* ln1; // (L, B, T, C)
@@ -222,35 +222,32 @@ void fill_in_activation_sizes(const ActivationTensors* data, TensorSpec (&tensor
     size_t NH = config.num_heads;
     size_t C = config.channels;
     tensors[0] = TENSOR_SPEC(data->encoded, B * T * C);
-    // if recompute >= 1 then we will recompute the layernorm forward activation during backward pass
     tensors[1] = TENSOR_SPEC(data->ln1,  (recompute < 2) ? L * B * T * C : 0);
-    // tensors[2] = TENSOR_SPEC(data->ln1_mean, L * B * T);
+    // ln1_mean removed, index 2 is now ln1_rstd
     tensors[2] = TENSOR_SPEC(data->ln1_rstd, L * B * T);
     tensors[3] = TENSOR_SPEC(data->atty, L * B * T * C);
     #ifdef ENABLE_CUDNN
-    // FP32 stats tensor for cuDNN to be passed to backward pass
-    tensors[5] = TENSOR_SPEC(data->att, L * B * NH * T);
+    tensors[4] = TENSOR_SPEC(data->att, L * B * NH * T);
     #else
     tensors[4] = TENSOR_SPEC(data->att, L * B * NH * T * T);
     #endif
     tensors[5] = TENSOR_SPEC(data->residual2, L * B * T * C);
-    // if recompute >= 1 then we will recompute the layernorm forward activation during backward pass
     tensors[6] = TENSOR_SPEC(data->ln2, (recompute < 2) ? L * B * T * C : 0);
-    // tensors[8] = TENSOR_SPEC(data->ln2_mean, L * B * T);
+    // ln2_mean removed, index 7 is now ln2_rstd
     tensors[7] = TENSOR_SPEC(data->ln2_rstd, L * B * T);
     tensors[8] = TENSOR_SPEC(data->fch, L * B * T * 4*C);
-    // if recompute >= 1 then we will recompute gelu_forward during backward and use this as scratch buffer
     tensors[9] = TENSOR_SPEC(data->fch_gelu, (recompute < 1) ? L * B * T * 4*C : B * T * 4*C);
     tensors[10] = TENSOR_SPEC(data->residual3, L * B * T * C);
     tensors[11] = TENSOR_SPEC(data->lnf, B * T * C);
-    // tensors[14] = TENSOR_SPEC(data->lnf_mean, B * T);
+    // lnf_mean removed, index 12 is now lnf_rstd
     tensors[12] = TENSOR_SPEC(data->lnf_rstd, B * T);
     tensors[13] = TENSOR_SPEC(data->losses, B * T);
     tensors[14] = TENSOR_SPEC(data->qkvr, L * B * T * 3*C);
     tensors[15] = TENSOR_SPEC(data->output, B * T * max(3*C, max(NH*T, Vp)));
-
     tensors[16] = TENSOR_SPEC(data->scratch_bt4c, B * T * 4 * C);
     tensors[17] = TENSOR_SPEC(data->scratch_btc, B * T * C);
+
+    // Note: The array size for tensors is 20, so indices 18 and 19 are removed.
 }
 
 void* malloc_and_point_activations(TensorSpec (&tensors)[NUM_ACTIVATION_TENSORS]) {
