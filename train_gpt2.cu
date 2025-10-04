@@ -45,8 +45,8 @@ GPT-2 Transformer Neural Net training loop. See README.md for usage.
 // ----------- Layer implementations in CUDA -----------
 // defines: encoder_forward, encoder_backward
 #include "llmc/encoder.cuh"
-// defines: layernorm_forward, residual_forward, fused_residual_forward5, layernorm_backward
-#include "llmc/layernorm.cuh"
+// defines: layernorm_forward, residual_forward, fused_residual_forward5, layernorm_backward, rmsnorm_forward, rmsnorm_backward
+#include "llmc/norms.cuh"
 // defines: matmul_cublaslt, matmul_forward, matmul_backward, gelu_forward, gelu_backward_inplace
 #include "llmc/matmul.cuh"
 #ifdef ENABLE_CUDNN
